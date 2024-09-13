@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,7 +55,7 @@ func main() {
 				sql := generateSql(row)
 				_, err := targetDb.Exec(context.Background(), sql)
 				if err != nil {
-					log.Println(err)
+					log.Println(err, sql)
 				}
 				wg.Done()
 			}()
@@ -121,12 +122,19 @@ func generateSql(row syncLog) string {
 			bytes, _ := json.Marshal(v)
 			v = string(bytes)
 		}
+		if _, ok := v.(float64); ok {
+			v = strconv.FormatFloat(v.(float64), 'f', -1, 64)
+		}
 		if _, ok := v.(string); ok {
 			v = strings.Replace(v.(string), "'", "''", -1)
 		}
 
 		keys = append(keys, k)
-		values = append(values, fmt.Sprintf("'%v'", v))
+		if v == nil {
+			values = append(values, "null")
+		} else {
+			values = append(values, fmt.Sprintf("'%v'", v))
+		}
 		if k != "id" {
 			update = append(update, fmt.Sprintf("%v = excluded.%v", k, k))
 		}
