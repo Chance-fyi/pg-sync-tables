@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,10 +15,11 @@ import (
 )
 
 var (
-	sourceUrl = "postgres://postgres:123456@192.168.116.128:5433/postgres"
-	targetUrl = "postgres://postgres:123456@192.168.116.128:5434/postgres"
-	sourceDb  *pgx.Conn
-	targetDb  *pgxpool.Pool
+	sourceUrl      = "postgres://postgres:123456@192.168.116.128:5433/postgres"
+	targetUrl      = "postgres://postgres:123456@192.168.116.128:5434/postgres"
+	tableUniqueKey = map[string][]string{}
+	sourceDb       *pgx.Conn
+	targetDb       *pgxpool.Pool
 )
 
 func main() {
@@ -55,7 +57,7 @@ func main() {
 				sql := generateSql(row)
 				_, err := targetDb.Exec(context.Background(), sql)
 				if err != nil {
-					log.Println(err, sql)
+					log.Println(err, fmt.Sprintf("Log: %v", row.Id), sql)
 				}
 				wg.Done()
 			}()
@@ -97,17 +99,31 @@ func getChanges(pid int) (map[string]syncLog, int) {
 		var item syncLog
 		_ = rows.Scan(&item.Id, &item.TableName, &item.Operation, &item.Data)
 		pid = item.Id
-		id := item.Data["id"]
-		key := fmt.Sprintf("%v_%v", item.TableName, id)
-		item.Id = int(id.(float64))
+		key := fmt.Sprintf("%v", item.TableName)
+		for _, v := range uniqueKey(item.TableName) {
+			key = fmt.Sprintf("%v_%v", key, item.Data[v])
+		}
 		data[key] = item
 	}
 	return data, pid
 }
 
 func generateSql(row syncLog) string {
+	unique := uniqueKey(row.TableName)
 	if row.Operation == "DELETE" {
-		return fmt.Sprintf("delete from %v where id = '%v'", row.TableName, row.Id)
+		w := make([]string, 0, len(unique))
+		for _, k := range unique {
+			v := row.Data[k]
+			if _, ok := v.(float64); ok {
+				v = strconv.FormatFloat(v.(float64), 'f', -1, 64)
+			}
+			if _, ok := v.(string); ok {
+				v = strings.Replace(v.(string), "'", "''", -1)
+			}
+			w = append(w, fmt.Sprintf("%v = '%v'", k, v))
+		}
+
+		return fmt.Sprintf("delete from %v where %v", row.TableName, strings.Join(w, " and "))
 	}
 	l := len(row.Data)
 	keys := make([]string, 0, l)
@@ -135,9 +151,16 @@ func generateSql(row syncLog) string {
 		} else {
 			values = append(values, fmt.Sprintf("'%v'", v))
 		}
-		if k != "id" {
+		if !slices.Contains(unique, k) {
 			update = append(update, fmt.Sprintf("%v = excluded.%v", k, k))
 		}
 	}
-	return fmt.Sprintf("insert into %v (%v) values (%v) on conflict (id) do update set %v", row.TableName, strings.Join(keys, ","), strings.Join(values, ","), strings.Join(update, ","))
+	return fmt.Sprintf("insert into %v (%v) values (%v) on conflict (%v) do update set %v", row.TableName, strings.Join(keys, ","), strings.Join(values, ","), strings.Join(unique, ","), strings.Join(update, ","))
+}
+
+func uniqueKey(tableName string) []string {
+	if v, ok := tableUniqueKey[tableName]; ok {
+		return v
+	}
+	return []string{"id"}
 }
