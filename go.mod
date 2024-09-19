@@ -1,4 +1,4 @@
-module chat-data-migration
+module pg-sync-tables
 
 go 1.22.5
 
